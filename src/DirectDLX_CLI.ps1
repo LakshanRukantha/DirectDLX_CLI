@@ -1,245 +1,176 @@
 # DirectDLX_CLI - Direct Media Downloader
 # Developer: Lakshan Rukantha
-# Version: 1.0
+# Version: 2.0
 
-# Display banner
 function Show-Banner {
     Clear-Host
     Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║                                                          ║" -ForegroundColor Cyan
-    Write-Host "║              DirectDLX_CLI Media Downloader              ║" -ForegroundColor Green
-    Write-Host "║                                                          ║" -ForegroundColor Cyan
+    Write-Host "║          DirectDLX_CLI - Direct Media Downloader v2.0             ║" -ForegroundColor Green
     Write-Host "║              Developer: Lakshan Rukantha                 ║" -ForegroundColor Yellow
-    Write-Host "║                                                          ║" -ForegroundColor Cyan
-    Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
-    Write-Host ""
+    Write-Host "╚══════════════════════════════════════════════════════════╝`n" -ForegroundColor Cyan
 }
 
-# Create download directory if it doesn't exist
-function Initialize-DownloadFolder {
-    $downloadPath = Join-Path $PSScriptRoot "DirectDLX_CLI_Downloads"
-    if (-not (Test-Path $downloadPath)) {
-        New-Item -ItemType Directory -Path $downloadPath | Out-Null
-        Write-Host "[INFO] Created download folder: $downloadPath" -ForegroundColor Green
+function Get-MimeExtension {
+    param([string]$mime)
+    $map = @{
+        'video/mp4'='.mp4';'video/webm'='.webm';'image/jpeg'='.jpg';'image/png'='.png'
+        'image/gif'='.gif';'audio/mpeg'='.mp3';'audio/wav'='.wav';'application/pdf'='.pdf'
     }
-    return $downloadPath
+    return $map[$mime.Split(';')[0].Trim()]
 }
 
-# Get MIME type extension mapping
-function Get-ExtensionFromMime {
-    param([string]$mimeType)
-    
-    $mimeMap = @{
-        'video/mp4' = '.mp4'
-        'video/webm' = '.webm'
-        'video/x-matroska' = '.mkv'
-        'video/quicktime' = '.mov'
-        'video/x-msvideo' = '.avi'
-        'video/x-flv' = '.flv'
-        'image/jpeg' = '.jpg'
-        'image/png' = '.png'
-        'image/gif' = '.gif'
-        'image/webp' = '.webp'
-        'image/bmp' = '.bmp'
-        'image/svg+xml' = '.svg'
-        'audio/mpeg' = '.mp3'
-        'audio/wav' = '.wav'
-        'audio/ogg' = '.ogg'
-        'audio/webm' = '.weba'
-        'audio/aac' = '.aac'
-        'audio/flac' = '.flac'
-        'application/pdf' = '.pdf'
-        'application/zip' = '.zip'
-        'application/x-rar-compressed' = '.rar'
-        'text/plain' = '.txt'
-    }
-    
-    return $mimeMap[$mimeType]
-}
-
-# Extract filename from URL or detect from MIME type
-function Get-FileName {
-    param(
-        [string]$url,
-        [string]$contentType = ""
-    )
-    
-    $uri = [System.Uri]$url
-    $filename = [System.IO.Path]::GetFileName($uri.LocalPath)
-    
-    # Check if filename has a valid extension
-    if ([string]::IsNullOrEmpty($filename) -or $filename -notmatch '\.[a-zA-Z0-9]+$') {
-        # Try to get extension from MIME type
-        $extension = ""
-        if (-not [string]::IsNullOrEmpty($contentType)) {
-            $mimeType = $contentType -split ';' | Select-Object -First 1
-            $mimeType = $mimeType.Trim()
-            $extension = Get-ExtensionFromMime -mimeType $mimeType
-        }
-        
-        if ([string]::IsNullOrEmpty($extension)) {
-            $extension = ".bin"
-        }
-        
-        $filename = "DirectDLX_CLI_$(Get-Date -Format 'yyyyMMdd_HHmmss')$extension"
-    }
-    
-    return $filename
-}
-
-# Download file with progress
 function Get-File {
-    param(
-        [string]$url,
-        [string]$outputPath
-    )
+    param([string]$url, [string]$partFile)
     
     try {
+        $startByte = if (Test-Path $partFile) { (Get-Item $partFile).Length } else { 0 }
+        
         $request = [System.Net.HttpWebRequest]::Create($url)
+        $request.Timeout = 30000
+        if ($startByte -gt 0) { 
+            $request.AddRange($startByte)
+            Write-Host "[RESUME] From $([math]::Round($startByte/1MB, 2)) MB`n" -ForegroundColor Yellow
+        }
+        
         $response = $request.GetResponse()
-        $contentType = $response.ContentType
-        $totalBytes = $response.ContentLength
+        $totalBytes = $response.ContentLength + $startByte
+        $ext = Get-MimeExtension $response.ContentType
         
-        # Get proper filename with extension
-        $detectedFilename = Get-FileName -url $url -contentType $contentType
-        if ($detectedFilename -ne (Split-Path $outputPath -Leaf)) {
-            $outputPath = Join-Path (Split-Path $outputPath -Parent) $detectedFilename
+        # Detect filename with extension
+        if ($partFile -notmatch '\.\w+\.part$' -and $ext) {
+            $newPartFile = $partFile -replace '\.part$', "$ext.part"
+            if ($startByte -gt 0 -and (Test-Path $partFile)) { Move-Item $partFile $newPartFile -Force }
+            $partFile = $newPartFile
         }
         
-        $filename = Split-Path $outputPath -Leaf
+        $fileName = Split-Path $partFile -Leaf
+        $fileName = $fileName -replace '\.part$', ''
         
-        Write-Host "`n[DOWNLOAD] Starting download: $filename" -ForegroundColor Cyan
-        Write-Host "[URL] $url" -ForegroundColor Gray
+        Write-Host "[DOWNLOAD] $fileName" -ForegroundColor Cyan
+        Write-Host "[SIZE] $([math]::Round($totalBytes/1MB, 2)) MB`n" -ForegroundColor Gray
         
-        if ($totalBytes -gt 0) {
-            Write-Host "[SIZE] $("{0:N2}" -f ($totalBytes / 1MB)) MB" -ForegroundColor Gray
-        }
+        $stream = $response.GetResponseStream()
+        $fileMode = if ($startByte -gt 0) { [System.IO.FileMode]::Append } else { [System.IO.FileMode]::Create }
+        $file = [System.IO.File]::Open($partFile, $fileMode)
         
-        Write-Host ""
-        
-        $responseStream = $response.GetResponseStream()
-        $fileStream = [System.IO.File]::Create($outputPath)
-        
-        $buffer = New-Object byte[] 8192
-        $totalRead = 0
+        $buffer = New-Object byte[] 65536
+        $totalRead = $startByte
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $lastUpdate = [DateTime]::Now
-        $lastBytes = 0
+        $lastBytes = $totalRead
+        $lastTime = [DateTime]::Now
         
-        while (($read = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-            $fileStream.Write($buffer, 0, $read)
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $file.Write($buffer, 0, $read)
             $totalRead += $read
             
-            # Update progress every 100ms
-            $now = [DateTime]::Now
-            if (($now - $lastUpdate).TotalMilliseconds -ge 100) {
-                $elapsed = $sw.Elapsed.TotalSeconds
-                
-                if ($elapsed -gt 0) {
-                    # Calculate speed
-                    $speed = ($totalRead - $lastBytes) / $elapsed
-                    $lastBytes = $totalRead
-                    $sw.Restart()
-                    
-                    # Format speed
-                    if ($speed -gt 1MB) {
-                        $speedStr = "{0:N2} MB/s" -f ($speed / 1MB)
-                    } elseif ($speed -gt 1KB) {
-                        $speedStr = "{0:N2} KB/s" -f ($speed / 1KB)
-                    } else {
-                        $speedStr = "{0:N0} B/s" -f $speed
-                    }
-                    
-                    # Calculate percentage and progress bar
-                    if ($totalBytes -gt 0) {
-                        $percent = [math]::Floor(($totalRead / $totalBytes) * 100)
-                        $barLength = 40
-                        $filled = [math]::Floor(($percent / 100) * $barLength)
-                        $bar = ("#" * $filled).PadRight($barLength, "-")
-                        
-                        $downloadedMB = $totalRead / 1MB
-                        $totalMB = $totalBytes / 1MB
-                        
-                        Write-Host "`r[$bar] $percent% | $speedStr | $("{0:N2}" -f $downloadedMB)MB / $("{0:N2}" -f $totalMB)MB" -NoNewline -ForegroundColor Green
-                    } else {
-                        # Unknown size
-                        $downloadedMB = $totalRead / 1MB
-                        Write-Host "`r[Downloading...] $speedStr | $("{0:N2}" -f $downloadedMB)MB downloaded" -NoNewline -ForegroundColor Green
-                    }
-                }
-                
-                $lastUpdate = $now
+            if (([DateTime]::Now - $lastTime).TotalMilliseconds -ge 200) {
+                $speed = ($totalRead - $lastBytes) / $sw.Elapsed.TotalSeconds
+                $speedStr = if ($speed -gt 1MB) { "$([math]::Round($speed/1MB, 2)) MB/s" } else { "$([math]::Round($speed/1KB, 2)) KB/s" }
+                $percent = [math]::Floor(($totalRead / $totalBytes) * 100)
+                $bar = ("#" * [math]::Floor($percent * 40 / 100)).PadRight(40, "-")
+                Write-Host "`r[$bar] $percent% | $speedStr | $([math]::Round($totalRead/1MB, 2))MB / $([math]::Round($totalBytes/1MB, 2))MB" -NoNewline -ForegroundColor Green
+                $lastBytes = $totalRead
+                $lastTime = [DateTime]::Now
+                $sw.Restart()
             }
         }
         
-        # Final update
-        if ($totalBytes -gt 0) {
-            $barLength = 40
-            $bar = "#" * $barLength
-            $totalMB = $totalBytes / 1MB
-            Write-Host "`r[$bar] 100% | Complete | $("{0:N2}" -f $totalMB)MB / $("{0:N2}" -f $totalMB)MB" -ForegroundColor Green
-        }
+        $file.Close(); $stream.Close(); $response.Close()
         
-        $fileStream.Close()
-        $responseStream.Close()
-        $response.Close()
+        $finalFile = $partFile -replace '\.part$', ''
+        if (Test-Path $finalFile) { Remove-Item $finalFile -Force }
+        Move-Item $partFile $finalFile -Force
         
-        Write-Host "`n[SUCCESS] Download completed!" -ForegroundColor Green
-        Write-Host "[SAVED] $outputPath" -ForegroundColor Cyan
-        
+        Write-Host "`n[SUCCESS] Download completed!`n[SAVED] $finalFile`n" -ForegroundColor Green
+        return $true
     }
     catch {
-        Write-Host "`n`n[ERROR] Download failed: $($_.Exception.Message)" -ForegroundColor Red
-        if (Test-Path $outputPath) {
-            Remove-Item $outputPath -Force -ErrorAction SilentlyContinue
+        if ($file) { try { $file.Close() } catch {} }
+        if ($stream) { try { $stream.Close() } catch {} }
+        if ($response) { try { $response.Close() } catch {} }
+        
+        $errMsg = $_.Exception.Message
+        $shortErr = if ($errMsg -match "No such host|Unable to resolve") { "No internet" }
+                    elseif ($errMsg -match "timeout|did not properly respond|Unable to read") { "Connection lost" }
+                    elseif ($errMsg -match "403") { "Access denied" }
+                    elseif ($errMsg -match "404") { "File not found" }
+                    else { "Download interrupted" }
+        
+        Write-Host "`n[ERROR] $shortErr" -ForegroundColor Red
+        
+        if (Test-Path $partFile) {
+            $size = [math]::Round((Get-Item $partFile).Length/1MB, 2)
+            Write-Host "[INFO] Saved: $size MB`n" -ForegroundColor Yellow
+            
+            $retry = Read-Host "Resume? (y/n)"
+            if ($retry -eq 'y') {
+                Write-Host ""
+                return Get-File -url $url -partFile $partFile
+            }
         }
+        return $false
     }
 }
 
-# Main script
+# Main
 Show-Banner
 
-# Initialize download folder
-$downloadFolder = Initialize-DownloadFolder
+$downloadFolder = Join-Path $PSScriptRoot "DirectDLX_CLI_Downloads"
+if (-not (Test-Path $downloadFolder)) { 
+    New-Item -ItemType Directory -Path $downloadFolder | Out-Null
+    Write-Host "[INFO] Created: $downloadFolder`n" -ForegroundColor Green
+}
 
-# Main loop
-do {
-    Write-Host "`nEnter the direct media URL (or 'exit' to quit):" -ForegroundColor Yellow
+while ($true) {
+    Write-Host "Enter URL (or 'exit'):" -ForegroundColor Yellow
     $url = Read-Host "URL"
     
-    if ($url -eq 'exit') {
+    if ($url -eq 'exit') { 
         Write-Host "`nThank you for using DirectDLX_CLI!" -ForegroundColor Cyan
-        break
+        break 
     }
     
-    if ([string]::IsNullOrWhiteSpace($url)) {
-        Write-Host "[ERROR] URL cannot be empty!" -ForegroundColor Red
-        continue
+    if ([string]::IsNullOrWhiteSpace($url)) { 
+        Write-Host "[ERROR] URL required!`n" -ForegroundColor Red
+        continue 
     }
     
-    # Validate URL
-    if ($url -notmatch '^https?://') {
-        Write-Host "[ERROR] Invalid URL format. Must start with http:// or https://" -ForegroundColor Red
-        continue
+    if ($url -notmatch '^https?://') { 
+        Write-Host "[ERROR] Invalid URL`n" -ForegroundColor Red
+        continue 
     }
     
-    # Get initial filename (may be updated after detecting MIME type)
-    $filename = Get-FileName -url $url
-    $outputPath = Join-Path $downloadFolder $filename
+    # Check for existing partial files
+    $partials = Get-ChildItem "$downloadFolder\*.part" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
     
-    # Check if file already exists
-    if (Test-Path $outputPath) {
-        Write-Host "[WARNING] File already exists: $filename" -ForegroundColor Yellow
-        $overwrite = Read-Host "Overwrite? (y/n)"
-        if ($overwrite -ne 'y') {
-            Write-Host "[SKIPPED] Download cancelled." -ForegroundColor Gray
+    if ($partials) {
+        $latest = $partials[0]
+        $size = [math]::Round($latest.Length/1MB, 2)
+        Write-Host "[INFO] Found: $($latest.Name) ($size MB)" -ForegroundColor Yellow
+        
+        $resume = Read-Host "Resume this? (y/n)"
+        if ($resume -eq 'y') {
+            $success = Get-File -url $url -partFile $latest.FullName
+            
+            # Cleanup old partials
+            if ($success -and $partials.Count -gt 1) {
+                Write-Host "[CLEANUP] Removing old files..." -ForegroundColor Gray
+                $partials | Select-Object -Skip 1 | ForEach-Object { 
+                    Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+                }
+            }
             continue
         }
+        
+        $delete = Read-Host "Delete and start fresh? (y/n)"
+        if ($delete -ne 'y') { 
+            Write-Host "[SKIPPED]`n" -ForegroundColor Gray
+            continue 
+        }
+        Remove-Item $latest.FullName -Force
     }
     
-    # Download the file
-    Get-File -url $url -outputPath $outputPath
-    
-    Write-Host ""
-    
-} while ($true)
+    # New download
+    $partFile = Join-Path $downloadFolder "DirectDLX_CLI_$(Get-Date -Format 'yyyyMMdd_HHmmss').part"
+    Get-File -url $url -partFile $partFile
+}
