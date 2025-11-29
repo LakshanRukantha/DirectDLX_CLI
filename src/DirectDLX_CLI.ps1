@@ -5,8 +5,9 @@
 function Show-Banner {
     Clear-Host
     Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║          DirectDLX_CLI - Direct Media Downloader v2.0             ║" -ForegroundColor Green
+    Write-Host "║        DirectDLX_CLI - Direct Media Downloader           ║" -ForegroundColor Green
     Write-Host "║              Developer: Lakshan Rukantha                 ║" -ForegroundColor Yellow
+    Write-Host "║                         v2.0                             ║" -ForegroundColor Blue
     Write-Host "╚══════════════════════════════════════════════════════════╝`n" -ForegroundColor Cyan
 }
 
